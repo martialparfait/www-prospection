@@ -34,6 +34,10 @@ jobs:
     name: Send batch via SendGrid
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Les secrets sont stockés dans l'environment GitHub "Prod" — il faut le
+    # déclarer ici sinon le job ne peut pas les lire (les "Environment secrets"
+    # sont scopés à un environnement, contrairement aux "Repository secrets").
+    environment: Prod
 
     # Garde-fou : empêche un déclenchement accidentel avant la date de démarrage.
     # On la stocke en var d'env pour pouvoir l'ajuster sans toucher au code.
