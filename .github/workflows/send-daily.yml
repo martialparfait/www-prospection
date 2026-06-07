@@ -8,7 +8,7 @@ name: Send daily emails (metro_fitness_2026)
 #   - Indispensable pour le 1er envoi (vérifier que tout marche)
 #   - Utile pour rattraper un jour où le cron a planté
 
-on:
+"on":
   schedule:
     - cron: "0 8 * * 1-5"  # Mon-Fri 08:00 UTC
   workflow_dispatch:
