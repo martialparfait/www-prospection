@@ -58,36 +58,48 @@ APIFY_ACTOR = "compass~crawler-google-places"
 APIFY_ENDPOINT = f"https://api.apify.com/v2/acts/{APIFY_ACTOR}/run-sync-get-dataset-items"
 
 SOURCE = "apify_google_maps"
-CAMPAIGN_BATCH = "metro_fitness_2026"
-CATEGORY = "fitness"
 
-# Filtres qualité
+# Filtres qualité (s'appliquent à tous les profils).
 MIN_REVIEWS = 50           # termes génériques
 PREMIUM_MIN_REVIEWS = 15   # requêtes par enseigne (capte les boutiques récentes)
 
 # Plafonds Apify par recherche (les requêtes enseigne renvoient peu → cap bas = économie).
-# Générique à 60 : le premium/mid n'est qu'une minorité des résultats génériques,
-# inutile de payer 120 — ça ÷2 le coût des recherches génériques.
 GENERIC_MAX_PER_SEARCH = 60
 CHAIN_MAX_PER_SEARCH = 30
 
-# Filtre catégorie : on ne garde que les vrais lieux de fitness (exclut spas de
-# flottaison/récup, physio, instituts de beauté… ramassés par les termes génériques).
+# Filtres catégorie / nom — un set par profil (cf. PROFILES plus bas).
 FITNESS_CAT_HINTS = (
     "gym", "fitness", "health club", "physical fitness", "personal train",
     "pilates", "yoga", "crossfit", "boxing", "martial art", "cycling studio",
     "spin", "athletic club", "bootcamp", "strength", "reformer", "barre",
 )
-NAME_FITNESS_HINTS = (
+FITNESS_NAME_HINTS = (
     "gym", "fitness", "pilates", "crossfit", "health club", "yoga",
     "barre", "cycle", "athletic club", "bootcamp",
 )
+
+# Profil yoga/pilates — focus sur les studios spécialisés.
+YOGA_CAT_HINTS = (
+    "yoga", "pilates", "reformer", "barre", "vinyasa", "ashtanga",
+    "hot yoga", "bikram", "iyengar", "kundalini", "yin yoga",
+    "meditation", "mindfulness studio",
+)
+YOGA_NAME_HINTS = (
+    "yoga", "pilates", "reformer", "barre", "vinyasa", "ashtanga",
+    "namaste", "lagree",
+)
+
+# Variables module-level mutables — main() les assigne selon --profile.
+CAMPAIGN_BATCH = "metro_fitness_2026"
+CATEGORY = "fitness"
+CAT_HINTS = FITNESS_CAT_HINTS
+NAME_HINTS = FITNESS_NAME_HINTS
 
 BATCH_SIZE = 500
 THROTTLE_SECONDS = 1.5  # pause entre appels Apify (évite le rate-limiting / connection reset)
 
 # Ciblage par pays (issu de la recherche web vérifiée — workflow metro-fitness-targeting).
-COUNTRIES = {
+COUNTRIES_FITNESS = {
     "US": {
         "name": "United States",
         "target": 2500,
@@ -185,6 +197,99 @@ COUNTRIES = {
 }
 
 
+# Profil yoga/pilates — mêmes métropoles (les studios yoga clusterisent dans
+# les mêmes zones que les boutiques fitness premium).
+COUNTRIES_YOGA = {
+    "US": {
+        "name": "United States",
+        "target": 2000,
+        "cities": COUNTRIES_FITNESS["US"]["cities"],
+        "generic_terms": [
+            "yoga studio", "hot yoga studio", "vinyasa yoga studio",
+            "ashtanga yoga studio", "reformer pilates studio",
+            "classical pilates studio", "Lagree fitness studio",
+            "barre studio", "boutique pilates studio",
+            "private pilates studio", "rooftop yoga studio",
+        ],
+        "chain_queries": [
+            "CorePower Yoga", "YogaSix", "YogaWorks", "Y7 Studio",
+            "Modo Yoga", "Sky Ting Yoga", "Pure Yoga",
+            "Club Pilates", "Solidcore", "Lagree Fitness",
+            "Pure Barre", "Barre3", "The Bar Method", "Sweat Yoga",
+            "Sculpt Society",
+        ],
+        "avoid": [
+            "planet fitness", "la fitness", "24 hour fitness", "youfit",
+            "crunch", "eos fitness", "blink fitness", "snap fitness",
+            "anytime fitness", "ufc gym",
+        ],
+    },
+    "GB": {
+        "name": "United Kingdom",
+        "target": 1200,
+        "cities": COUNTRIES_FITNESS["GB"]["cities"],
+        "generic_terms": [
+            "yoga studio", "hot yoga studio", "vinyasa yoga studio",
+            "ashtanga yoga studio", "reformer pilates studio",
+            "classical pilates studio", "Lagree pilates studio",
+            "barre studio", "boutique pilates studio",
+            "private pilates studio", "rooftop yoga",
+        ],
+        "chain_queries": [
+            "triyoga", "Hot Pod Yoga", "Yogahome", "More Yoga",
+            "Heartcore", "Reformer Studio", "Ten Health and Fitness",
+            "Bodyism", "Frame Pilates", "Psycle Yoga", "Romemo Yoga",
+            "Fly LDN", "Indaba Yoga",
+        ],
+        "avoid": [
+            "puregym", "the gym group", "jd gyms", "anytime fitness",
+            "snap fitness", "leisure centre", "places leisure",
+        ],
+    },
+    "AU": {
+        "name": "Australia",
+        "target": 800,
+        "cities": COUNTRIES_FITNESS["AU"]["cities"],
+        "generic_terms": [
+            "yoga studio", "hot yoga studio", "vinyasa yoga studio",
+            "ashtanga yoga studio", "reformer pilates studio",
+            "classical pilates studio", "Lagree pilates studio",
+            "barre studio", "boutique pilates studio",
+            "private pilates studio",
+        ],
+        "chain_queries": [
+            "KX Pilates", "Power Living Yoga", "Body Mind Life",
+            "Humming Puppy", "BeReal Yoga", "Studio Pilates",
+            "Pilates Performance", "Studio 99 Pilates",
+            "Hot Yoga Australia", "Reformer 8", "One Hot Yoga",
+            "Inspire Pilates", "Flow Athletic",
+        ],
+        "avoid": [
+            "crunch fitness", "club lime", "snap fitness", "jetts",
+            "anytime fitness", "leisure centre", "aquatic centre",
+        ],
+    },
+}
+
+
+# Profils disponibles via --profile : chaque profil décrit sa catégorie, ses
+# filtres et son ciblage géographique. Le batch en DB porte le nom du profil.
+PROFILES = {
+    "metro_fitness_2026": {
+        "category": "fitness",
+        "cat_hints": FITNESS_CAT_HINTS,
+        "name_hints": FITNESS_NAME_HINTS,
+        "countries": COUNTRIES_FITNESS,
+    },
+    "yoga_pilates_2026": {
+        "category": "yoga_pilates",
+        "cat_hints": YOGA_CAT_HINTS,
+        "name_hints": YOGA_NAME_HINTS,
+        "countries": COUNTRIES_YOGA,
+    },
+}
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -256,15 +361,15 @@ def is_budget(name, avoid_list):
 
 
 def is_fitness_place(place):
-    """True si le lieu est bien un établissement de fitness (catégorie Google ou nom).
-    Exclut les spas/récup/physio/beauté que les termes génériques font remonter.
-    NB : un 'athletic club and spa' a une catégorie fitness → conservé."""
+    """True si le lieu match les hints du profil actif (catégorie Google ou nom).
+    Le nom de la fonction est historique — fonctionne pour fitness ET yoga/pilates
+    selon les CAT_HINTS / NAME_HINTS du profil sélectionné via --profile."""
     cats = place.get("categories") or []
     cat_text = normalize_text(" | ".join(list(cats) + [place.get("categoryName") or ""]))
-    if any(h in cat_text for h in FITNESS_CAT_HINTS):
+    if any(h in cat_text for h in CAT_HINTS):
         return True
     name = normalize_text(place.get("title") or place.get("name") or "")
-    return any(h in name for h in NAME_FITNESS_HINTS)
+    return any(h in name for h in NAME_HINTS)
 
 
 def to_establishment(place, country_code, default_region, min_reviews):
@@ -377,16 +482,29 @@ def city_search_specs(cfg, test=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--country", choices=list(COUNTRIES), help="Limiter à un pays")
+    parser.add_argument("--profile", choices=list(PROFILES), default="metro_fitness_2026",
+                        help="Profil de campagne : metro_fitness_2026 (défaut) ou yoga_pilates_2026")
+    parser.add_argument("--country", choices=["US", "GB", "AU"], help="Limiter à un pays")
     parser.add_argument("--dry-run", action="store_true", help="Scrape mais n'insère rien")
     parser.add_argument("--test", action="store_true",
                         help="Run minimal (1 ville + 2 termes/pays, sans enseignes)")
     parser.add_argument("--max", type=int, default=None,
                         help="Override du plafond résultats/recherche générique")
     parser.add_argument("--cities-from", type=int, default=1, metavar="N",
-                        help="Reprise : commencer à la N-ième ville (1-indexed) du pays. "
-                             "Ex. --country US --cities-from 9 pour relancer à partir de Boston.")
+                        help="Reprise : commencer à la N-ième ville (1-indexed) du pays.")
     args = parser.parse_args()
+
+    # Applique le profil aux variables module-level utilisées par les helpers
+    # (to_establishment, is_fitness_place, etc.).
+    global CAMPAIGN_BATCH, CATEGORY, CAT_HINTS, NAME_HINTS
+    profile = PROFILES[args.profile]
+    CAMPAIGN_BATCH = args.profile
+    CATEGORY = profile["category"]
+    CAT_HINTS = profile["cat_hints"]
+    NAME_HINTS = profile["name_hints"]
+    COUNTRIES = profile["countries"]
+
+    print(f"🎯 Profil actif : {args.profile} (category={CATEGORY})")
 
     check_config()
     supabase = None if args.dry_run else create_client(SUPABASE_URL, SUPABASE_KEY)

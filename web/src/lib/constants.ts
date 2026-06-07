@@ -4,6 +4,7 @@ export const COOKIE_NAME = "www_auth";
 // Campagnes connues — l'ordre détermine le défaut (1ère = active).
 export const CAMPAIGNS = [
   { key: "metro_fitness_2026", label: "Metro Fitness 2026 (USA/UK/AU)" },
+  { key: "yoga_pilates_2026", label: "Yoga & Pilates 2026 (USA/UK/AU)" },
   { key: "pilot_us_2026", label: "Pilote US Yoga/Pilates (archivé)" },
 ] as const;
 
