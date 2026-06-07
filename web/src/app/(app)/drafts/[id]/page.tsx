@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Calendar, ExternalLink, Mail, Sparkles, User } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, Sparkles, X } from "lucide-react";
 import { getDraft } from "@/lib/queries";
+import { approveDraftAction, rejectDraftAction } from "@/lib/actions";
 import { Badge, Card } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -81,6 +82,38 @@ export default async function DraftDetailPage({
             <span>→ {d.recipient_email}</span>
           </div>
         </div>
+
+        {/* Approve / Reject — visible uniquement quand status=draft */}
+        {d.status === "draft" && (
+          <div className="flex items-center gap-2">
+            <form action={approveDraftAction}>
+              <input type="hidden" name="id" value={d.id} />
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-emerald-700"
+              >
+                <Check className="h-4 w-4" />
+                Approuver
+              </button>
+            </form>
+            <form action={rejectDraftAction} className="flex items-center gap-2">
+              <input type="hidden" name="id" value={d.id} />
+              <input
+                type="text"
+                name="notes"
+                placeholder="Raison (optionnel)…"
+                className="w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20"
+              />
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-white px-4 py-2 text-sm font-medium text-rose-700 shadow-sm transition hover:bg-rose-50"
+              >
+                <X className="h-4 w-4" />
+                Rejeter
+              </button>
+            </form>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_2fr]">

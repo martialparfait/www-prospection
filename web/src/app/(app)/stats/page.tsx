@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { BarChart3, Mail, MousePointerClick, ShieldAlert, UserMinus, Clock, UserPlus } from "lucide-react";
-import { getEmailStats } from "@/lib/queries";
+import { BarChart3, CalendarClock, Mail, MousePointerClick, ShieldAlert, UserMinus, Clock, UserPlus } from "lucide-react";
+import { getEmailStats, getCronStatus } from "@/lib/queries";
 import { getActiveCampaign, campaignLabel } from "@/lib/campaign";
 import { fmtInt, fmtPct } from "@/lib/labels";
 import { Card, PageHeader, StatCard } from "@/components/ui";
@@ -44,11 +44,41 @@ function Bar({
   );
 }
 
+function fmtDateShort(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("fr-FR", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Brussels",
+  });
+}
+
+function fmtDateOnly(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso + "T00:00:00Z").toLocaleDateString("fr-FR", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 export default async function StatsPage() {
   const activeCampaign = await getActiveCampaign();
-  const stats = await getEmailStats(activeCampaign);
+  const [stats, cron] = await Promise.all([
+    getEmailStats(activeCampaign),
+    getCronStatus(activeCampaign),
+  ]);
 
   const noData = stats.totals.sent === 0;
+  const dailyProgress = Math.min(100, (cron.sentToday / cron.dailyTarget) * 100);
+  const totalEnvelope = cron.sentTotal + cron.approvedRemaining + cron.draftRemaining;
+  const totalProgress =
+    totalEnvelope > 0 ? Math.min(100, (cron.sentTotal / totalEnvelope) * 100) : 0;
 
   return (
     <div className="space-y-8">
@@ -56,6 +86,102 @@ export default async function StatsPage() {
         title="Stats d'envoi"
         subtitle={`Campagne : ${campaignLabel(activeCampaign)} — mesures live alimentées par les webhooks SendGrid (clics, bounces, désabonnements, replies).`}
       />
+
+      {/* Cron status — pipeline d'envoi */}
+      <Card className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+              <CalendarClock className="h-4 w-4 text-slate-400" />
+              Pipeline d'envoi — GitHub Actions cron
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              {cron.campaignStarted
+                ? `${cron.dailyTarget} emails/jour ouvré, 10h CET. Tourne tant qu'il reste des drafts approuvés.`
+                : `Démarrage planifié pour ${fmtDateOnly(cron.campaignStartDate)}. Le cron tourne déjà mais skip tant que la date n'est pas atteinte.`}
+            </p>
+          </div>
+          {cron.nextRunIso && (
+            <div className="rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs">
+              <div className="font-medium text-brand-900">Prochaine exécution</div>
+              <div className="mt-0.5 text-slate-600 tnum">
+                {fmtDateShort(cron.nextRunIso)}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-4">
+          {/* Aujourd'hui */}
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="text-xs text-slate-500">Aujourd'hui</div>
+            <div className="mt-1 text-xl font-semibold tnum text-slate-900">
+              {fmtInt(cron.sentToday)} / {fmtInt(cron.dailyTarget)}
+            </div>
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full rounded-full bg-brand-500"
+                style={{ width: `${dailyProgress}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Total envoyés / restants */}
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="text-xs text-slate-500">Total envoyés</div>
+            <div className="mt-1 text-xl font-semibold tnum text-slate-900">
+              {fmtInt(cron.sentTotal)}{" "}
+              <span className="text-sm font-normal text-slate-400">
+                / {fmtInt(totalEnvelope)}
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full rounded-full bg-emerald-500"
+                style={{ width: `${totalProgress}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Approuvés restants */}
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="text-xs text-slate-500">Approuvés restants</div>
+            <div className="mt-1 text-xl font-semibold tnum text-emerald-700">
+              {fmtInt(cron.approvedRemaining)}
+            </div>
+            <div className="mt-1 text-xs text-slate-400">
+              prêts pour le prochain run
+            </div>
+          </div>
+
+          {/* ETA fin */}
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="text-xs text-slate-500">ETA fin de campagne</div>
+            <div className="mt-1 text-xl font-semibold tnum text-slate-900">
+              {fmtDateOnly(cron.etaFinishDate)}
+            </div>
+            <div className="mt-1 text-xs text-slate-400">
+              à {cron.dailyTarget}/j ouvré
+            </div>
+          </div>
+        </div>
+
+        {cron.draftRemaining > 0 && (
+          <div className="mt-4 flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
+            <span className="text-amber-900">
+              <strong>{fmtInt(cron.draftRemaining)} drafts</strong> encore en
+              status <code className="rounded bg-amber-100 px-1 py-0.5">draft</code>{" "}
+              — non envoyés tant qu'ils ne sont pas approuvés.
+            </span>
+            <Link
+              href="/drafts?status=draft"
+              className="font-medium text-amber-900 underline hover:text-amber-700"
+            >
+              Approuver →
+            </Link>
+          </div>
+        )}
+      </Card>
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">

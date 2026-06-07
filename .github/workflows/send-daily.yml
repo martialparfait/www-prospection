@@ -1,0 +1,98 @@
+name: Send daily emails (metro_fitness_2026)
+
+# Cron daily Mon-Fri at 08:00 UTC (10:00 Brussels été / 09:00 hiver).
+# Démarrage de la campagne : mardi 2026-06-09 — les déclenchements
+# antérieurs sont sans effet (0 draft approved au répertoire).
+#
+# Trigger manuel possible via "Run workflow" dans l'onglet Actions :
+#   - Indispensable pour le 1er envoi (vérifier que tout marche)
+#   - Utile pour rattraper un jour où le cron a planté
+
+on:
+  schedule:
+    - cron: "0 8 * * 1-5"  # Mon-Fri 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Nombre max d'emails à envoyer (default 400)"
+        required: false
+        default: "400"
+      dry_run:
+        description: "Dry-run (liste sans envoyer)"
+        type: boolean
+        required: false
+        default: false
+
+# Concurrency : si un run précédent tourne encore, on attend qu'il finisse
+# (évite double-envoi).
+concurrency:
+  group: send-daily-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  send:
+    name: Send batch via SendGrid
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Garde-fou : empêche un déclenchement accidentel avant la date de démarrage.
+    # On la stocke en var d'env pour pouvoir l'ajuster sans toucher au code.
+    env:
+      CAMPAIGN_START_DATE: "2026-06-09"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check campaign start date
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          if [ "$today" \< "$CAMPAIGN_START_DATE" ]; then
+            echo "::notice::Today ($today) is before CAMPAIGN_START_DATE ($CAMPAIGN_START_DATE). Skipping."
+            echo "SKIP=1" >> $GITHUB_ENV
+          fi
+
+      - name: Write .env from secrets
+        if: env.SKIP != '1'
+        run: |
+          cat > .env <<EOF
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY=${{ secrets.SUPABASE_SECRET_KEY }}
+          SENDGRID_API_KEY=${{ secrets.SENDGRID_API_KEY }}
+          SENDGRID_FROM_EMAIL=${{ secrets.SENDGRID_FROM_EMAIL }}
+          SENDGRID_FROM_NAME=${{ secrets.SENDGRID_FROM_NAME }}
+          SENDGRID_REPLY_TO=${{ secrets.SENDGRID_REPLY_TO }}
+          SENDGRID_UNSUB_GROUP_ID=${{ secrets.SENDGRID_UNSUB_GROUP_ID }}
+          EOF
+
+      - name: Send batch
+        if: env.SKIP != '1'
+        id: send
+        run: |
+          LIMIT="${{ github.event.inputs.limit || '400' }}"
+          DRY_RUN=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN="--dry-run"
+          fi
+          mkdir -p logs
+          LOG_FILE="logs/send_$(date -u +%Y%m%d-%H%M%S).log"
+          set -o pipefail
+          python3 send_drafts.py --status approved --limit "$LIMIT" $DRY_RUN 2>&1 | tee "$LOG_FILE"
+          echo "log_file=$LOG_FILE" >> $GITHUB_OUTPUT
+
+      - name: Upload send log
+        if: always() && env.SKIP != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: send-log-${{ github.run_id }}
+          path: logs/
+          retention-days: 90

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, ChevronRight as ArrowRight, Mail, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronRight as ArrowRight, Mail, Search, Shuffle } from "lucide-react";
 import {
   DRAFTS_PAGE_SIZE,
   getDrafts,
@@ -7,7 +7,9 @@ import {
 } from "@/lib/queries";
 import { getActiveCampaign, campaignLabel } from "@/lib/campaign";
 import { fmtInt } from "@/lib/labels";
-import { Badge, Card, PageHeader } from "@/components/ui";
+import { viewRandomDraftAction } from "@/lib/actions";
+import { Badge, PageHeader } from "@/components/ui";
+import { BulkApproveButton } from "@/components/bulk-approve-button";
 
 export const dynamic = "force-dynamic";
 
@@ -102,6 +104,8 @@ export default async function DraftsListPage({
   }
 
   const grandTotal = Object.values(byStatus).reduce((a, b) => a + b, 0);
+  const draftFilterActive = sp.status === "draft";
+  const draftsMatchingFilters = total; // total renvoyé par getDrafts pour les filtres courants
 
   return (
     <div className="space-y-6">
@@ -129,6 +133,47 @@ export default async function DraftsListPage({
           </Link>
         ))}
       </div>
+
+      {/* Panneau QA + Bulk Approve — visible uniquement quand status=draft est filtré */}
+      {draftFilterActive && draftsMatchingFilters > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold text-amber-900">
+                Validation par échantillonnage
+              </h2>
+              <p className="mt-1 text-xs text-amber-800 max-w-2xl">
+                Avant d'approuver en masse, ouvre une vingtaine de drafts au
+                hasard pour vérifier la qualité (catégorie cohérente, ton OK,
+                aucun nom inventé). Si moins de 2 % sont à rejeter, le
+                bulk-approve est sûr — la validation Haiku post-génération a
+                déjà filtré les hallucinations.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <form action={viewRandomDraftAction}>
+                <input type="hidden" name="campaign" value={activeCampaign} />
+                <input type="hidden" name="status" value="draft" />
+                <input type="hidden" name="country" value={sp.country ?? ""} />
+                <input type="hidden" name="segment" value={sp.segment ?? ""} />
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900 shadow-sm hover:bg-amber-100"
+                >
+                  <Shuffle className="h-4 w-4" />
+                  Ouvrir 1 draft au hasard
+                </button>
+              </form>
+              <BulkApproveButton
+                campaign={activeCampaign}
+                country={sp.country ?? ""}
+                segment={sp.segment ?? ""}
+                count={draftsMatchingFilters}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Filtres rapides */}
       <div className="flex flex-wrap items-center gap-2">

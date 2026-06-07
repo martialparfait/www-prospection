@@ -54,6 +54,7 @@ FROM_NAME = os.environ.get("SENDGRID_FROM_NAME", "Jean-Guy de Gabriac")
 REPLY_TO = os.environ.get("SENDGRID_REPLY_TO") or FROM_EMAIL
 UNSUB_GROUP_ID = os.environ.get("SENDGRID_UNSUB_GROUP_ID")
 
+DEFAULT_CAMPAIGN = "metro_fitness_2026"
 THROTTLE_SECONDS = 0.5  # ~120 emails/min, sous les limites SendGrid
 
 
@@ -145,7 +146,7 @@ def mark_sent(sb, draft_id: str):
 # --------------------------------------------------------------------------- #
 
 
-def fetch_drafts(sb, status: str, limit: int) -> list[dict]:
+def fetch_drafts(sb, status: str, limit: int, campaign: str = DEFAULT_CAMPAIGN) -> list[dict]:
     """Charge les drafts à envoyer, avec country de l'établissement (pour custom args)."""
     PAGE = 500
     out: list[dict] = []
@@ -154,6 +155,7 @@ def fetch_drafts(sb, status: str, limit: int) -> list[dict]:
         q = (sb.table("email_drafts")
              .select("id,contact_id,establishment_id,campaign,segment,recipient_email,subject,body_html,body_plain,haiku_subject_variant,status,establishments(country)")
              .eq("status", status)
+             .eq("campaign", campaign)
              .order("generated_at")
              .range(offset, offset + PAGE - 1))
         rows = q.execute().data
@@ -176,6 +178,7 @@ def main():
     g.add_argument("--status", choices=["draft", "approved"], help="Envoyer tous les drafts du statut donné")
     g.add_argument("--test", help="Envoie 1 seul email au destinataire fourni (avec le 1er draft dispo)")
     ap.add_argument("--limit", type=int, default=0, help="Limite d'envois (sécurité)")
+    ap.add_argument("--campaign", default=DEFAULT_CAMPAIGN, help="Campagne à envoyer (défaut: metro_fitness_2026)")
     ap.add_argument("--dry-run", action="store_true", help="Liste les drafts sans rien envoyer")
     args = ap.parse_args()
 
@@ -183,12 +186,12 @@ def main():
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     if args.test:
-        drafts = fetch_drafts(sb, "draft", 1)
+        drafts = fetch_drafts(sb, "draft", 1, args.campaign)
         if not drafts:
             sys.exit("❌ Aucun draft à utiliser pour le test")
         drafts[0]["_override_to"] = args.test
     else:
-        drafts = fetch_drafts(sb, args.status, args.limit or 0)
+        drafts = fetch_drafts(sb, args.status, args.limit or 0, args.campaign)
 
     print(f"📤 {len(drafts)} email(s) à envoyer"
           + (f" → override_to={args.test}" if args.test else "")

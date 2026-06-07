@@ -530,6 +530,126 @@ export async function getEmailStats(
 }
 
 // --------------------------------------------------------------------------
+// Cron status — sending pipeline (Mon-Fri 400/day)
+// --------------------------------------------------------------------------
+
+export type CronStatus = {
+  sentToday: number;
+  dailyTarget: number;
+  approvedRemaining: number;
+  draftRemaining: number;
+  sentTotal: number;
+  /** ETA fin (date ISO YYYY-MM-DD) en supposant `dailyTarget` jours ouvrés */
+  etaFinishDate: string | null;
+  /** Prochaine exécution (date ISO + heure) */
+  nextRunIso: string | null;
+  /** True après la date de démarrage configurée */
+  campaignStarted: boolean;
+  /** Date de démarrage configurée (ISO YYYY-MM-DD) */
+  campaignStartDate: string;
+};
+
+const CAMPAIGN_START_DATE = "2026-06-09";
+const DAILY_TARGET = 400;
+
+function nextWeekday(date: Date, hourUtc: number = 8): Date {
+  // Renvoie la prochaine date Mon-Fri à hourUtc:00 UTC à partir de `date`
+  const d = new Date(date);
+  d.setUTCHours(hourUtc, 0, 0, 0);
+  if (d.getTime() <= date.getTime()) {
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  // Skip weekends (0 = Sun, 6 = Sat)
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return d;
+}
+
+function addWeekdays(date: Date, count: number): Date {
+  const d = new Date(date);
+  let added = 0;
+  while (added < count) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const dow = d.getUTCDay();
+    if (dow !== 0 && dow !== 6) added += 1;
+  }
+  return d;
+}
+
+export async function getCronStatus(
+  batch: string = ACTIVE_CAMPAIGN,
+  now: Date = new Date()
+): Promise<CronStatus> {
+  const todayIso = now.toISOString().slice(0, 10);
+  const startOfDayIso = todayIso + "T00:00:00.000Z";
+
+  const [draftCounts, sentTodayQ, sentTotalQ] = await Promise.all([
+    // counts par statut (draft/approved/sent…) pour cette campagne
+    supabase
+      .from("email_drafts")
+      .select("status")
+      .eq("campaign", batch),
+    // # envoyés aujourd'hui (sent_at >= début de jour UTC)
+    supabase
+      .from("email_sends")
+      .select("id", { count: "exact", head: true })
+      .eq("campaign", batch)
+      .gte("sent_at", startOfDayIso),
+    // # envoyés total
+    supabase
+      .from("email_sends")
+      .select("id", { count: "exact", head: true })
+      .eq("campaign", batch)
+      .not("sent_at", "is", null),
+  ]);
+  if (draftCounts.error) throw draftCounts.error;
+  if (sentTodayQ.error) throw sentTodayQ.error;
+  if (sentTotalQ.error) throw sentTotalQ.error;
+
+  const tally: Record<string, number> = {};
+  for (const r of (draftCounts.data ?? []) as { status: string }[]) {
+    tally[r.status] = (tally[r.status] ?? 0) + 1;
+  }
+  const approvedRemaining = tally["approved"] ?? 0;
+  const draftRemaining = tally["draft"] ?? 0;
+
+  const campaignStarted = todayIso >= CAMPAIGN_START_DATE;
+  const sentToday = sentTodayQ.count ?? 0;
+  const sentTotal = sentTotalQ.count ?? 0;
+
+  // ETA — combien de jours ouvrés à raison de DAILY_TARGET/j
+  let etaFinishDate: string | null = null;
+  if (approvedRemaining > 0) {
+    const daysNeeded = Math.ceil(approvedRemaining / DAILY_TARGET);
+    const referenceDay = campaignStarted ? now : new Date(CAMPAIGN_START_DATE + "T08:00:00Z");
+    const eta = addWeekdays(referenceDay, daysNeeded - 1);
+    etaFinishDate = eta.toISOString().slice(0, 10);
+  }
+
+  // Prochaine exécution — next Mon-Fri 08:00 UTC ≥ max(now, CAMPAIGN_START)
+  let nextRunIso: string | null = null;
+  if (approvedRemaining > 0) {
+    const startBase = campaignStarted
+      ? now
+      : new Date(CAMPAIGN_START_DATE + "T07:59:59Z");
+    nextRunIso = nextWeekday(startBase).toISOString();
+  }
+
+  return {
+    sentToday,
+    dailyTarget: DAILY_TARGET,
+    approvedRemaining,
+    draftRemaining,
+    sentTotal,
+    etaFinishDate,
+    nextRunIso,
+    campaignStarted,
+    campaignStartDate: CAMPAIGN_START_DATE,
+  };
+}
+
+// --------------------------------------------------------------------------
 // Détail établissement (pas filtré par batch : on récupère par id direct)
 // --------------------------------------------------------------------------
 
