@@ -54,6 +54,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Check campaign start date
+        # On ne skip QUE sur trigger scheduled (cron). Sur workflow_dispatch
+        # manuel on bypass — utile pour tester avant la date de démarrage.
+        if: github.event_name == 'schedule'
         run: |
           today=$(date -u +%Y-%m-%d)
           if [ "$today" \< "$CAMPAIGN_START_DATE" ]; then
