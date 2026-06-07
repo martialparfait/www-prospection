@@ -383,17 +383,23 @@ export async function getDraft(id: string): Promise<EmailDraft | null> {
 export async function getDraftsCountByStatus(
   batch: string = ACTIVE_CAMPAIGN
 ): Promise<Record<string, number>> {
-  const { data, error } = await supabase
-    .from("email_drafts")
-    .select("status,establishments!inner(batch)")
-    .eq("campaign", batch)
-    .eq("establishments.batch", batch);
-  if (error) throw error;
-  const out: Record<string, number> = {};
-  for (const r of (data ?? []) as { status: string }[]) {
-    out[r.status] = (out[r.status] ?? 0) + 1;
-  }
-  return out;
+  // PostgREST plafonne les SELECT à 1000 lignes → on faisait du tally manuel
+  // qui sous-comptait. On fait un count exact par statut connu (head: true,
+  // pas de transfert de rows).
+  const STATUSES = ["draft", "approved", "rejected", "sent", "bounced"] as const;
+  const results = await Promise.all(
+    STATUSES.map(async (s) => {
+      const { count, error } = await supabase
+        .from("email_drafts")
+        .select("id,establishments!inner(batch)", { count: "exact", head: true })
+        .eq("campaign", batch)
+        .eq("establishments.batch", batch)
+        .eq("status", s);
+      if (error) throw error;
+      return [s, count ?? 0] as const;
+    })
+  );
+  return Object.fromEntries(results);
 }
 
 // --------------------------------------------------------------------------
