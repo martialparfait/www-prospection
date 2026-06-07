@@ -6,6 +6,7 @@ import {
   getStateFacets,
   PAGE_SIZE,
 } from "@/lib/queries";
+import { getActiveCampaign } from "@/lib/campaign";
 import { cleanUrl, fmtInt } from "@/lib/labels";
 import {
   CategoryBadge,
@@ -51,18 +52,22 @@ export default async function EstablishmentsPage({
 }) {
   const sp = await searchParams;
   const page = Math.max(1, Number(sp.page) || 1);
+  const activeCampaign = await getActiveCampaign();
 
   const [{ rows, total }, categories, states] = await Promise.all([
-    getEstablishments({
-      q: sp.q,
-      category: sp.category,
-      state: sp.state,
-      status: sp.status,
-      sort: sp.sort,
-      page,
-    }),
-    getCategoryFacets(),
-    getStateFacets(),
+    getEstablishments(
+      {
+        q: sp.q,
+        category: sp.category,
+        state: sp.state,
+        status: sp.status,
+        sort: sp.sort,
+        page,
+      },
+      activeCampaign
+    ),
+    getCategoryFacets(activeCampaign),
+    getStateFacets(activeCampaign),
   ]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));

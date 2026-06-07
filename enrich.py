@@ -7,19 +7,30 @@ Pour chaque établissement de Supabase (avec site web, statut 'pending') :
   3. VÉRIFICATION : syntaxe + MX (gratuit) puis NeverBounce (mailbox)
   4. Insertion dans `contacts` + mise à jour du statut de l'établissement
 
+Garde-fous compliance (issus du workflow enrichment-cost-plan, 2026-05-31) :
+  - REJET des freemails (@gmail/@yahoo/@hotmail/…) : un freemail bascule la
+    campagne en B2C strict (GDPR Art. 6 lourd, CCPA, APP 7). Le crawl ne garde
+    QUE les emails du domaine de l'établissement ; Apollo idem.
+  - reveal_personal_emails=False pour UK et AU (Apollo le bloque côté UK GDPR
+    de toute façon, APP 7 l'exige pour AU). True uniquement pour US.
+  - Lookup dans la table `opt_out` AVANT toute insertion dans `contacts`.
+  - Cible par défaut le batch `metro_fitness_2026` (pas l'ancien pilote).
+
 Variables .env :
     SUPABASE_URL, SUPABASE_SECRET_KEY
     APOLLO_KEY
     NEVER_BOUNCE_API_KEY
 
 Usage :
-    python3 enrich.py --limit 15 --no-apollo --no-verify   # test crawl seul
-    python3 enrich.py --limit 5                             # test complet petit lot
-    python3 enrich.py                                       # run complet
+    python3 enrich.py --pilot                       # 100 fiches stratifiées (50US/30UK/20AU)
+    python3 enrich.py --limit 5                     # test petit lot
+    python3 enrich.py --no-apollo --no-verify       # crawl seul
+    python3 enrich.py                               # run complet sur le batch courant
 """
 
 import argparse
 import os
+import random
 import re
 import sys
 import time
@@ -31,6 +42,8 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 import dns.resolver
+
+DEFAULT_BATCH = "metro_fitness_2026"
 
 # --------------------------------------------------------------------------- #
 # Config
@@ -128,11 +141,12 @@ def extract_emails(html, domain):
 
 def crawl_site(website):
     """Retourne (personal_emails, generic_emails).
-    Garde uniquement les emails du même domaine OU d'un fournisseur gratuit
-    (gmail, yahoo…). Rejette les domaines tiers (agences web, vendeurs)."""
+    COMPLIANCE STRICTE : garde UNIQUEMENT les emails du domaine de l'établissement.
+    Rejette les freemails (@gmail/@yahoo/@hotmail/…) ET les domaines tiers
+    (agences web, vendeurs). Un freemail = bascule en B2C strict (GDPR/CCPA/APP 7)."""
     domain = get_domain(website)
     base = base_url(website)
-    same_domain, free_prov, generic = [], [], []
+    same_domain, generic = [], []
     seen = set()
     for path in CRAWL_PATHS:
         html = fetch(base + path)
@@ -143,18 +157,16 @@ def crawl_site(website):
                 continue
             seen.add(e)
             edom = e.split("@")[1]
-            keep = (domain and edom == domain) or edom in FREE_PROVIDERS
-            if not keep:
-                continue  # domaine tiers (vendeur) -> ignoré
+            # COMPLIANCE : pas de freemail, pas de tiers — uniquement le domaine maison.
+            if edom in FREE_PROVIDERS or not (domain and edom == domain):
+                continue
             if is_generic(e):
                 generic.append(e)
-            elif domain and edom == domain:
-                same_domain.append(e)
             else:
-                free_prov.append(e)
+                same_domain.append(e)
         if same_domain:  # email perso du bon domaine trouvé -> on s'arrête
             break
-    return same_domain + free_prov, generic
+    return same_domain, generic
 
 
 def name_from_email(email):
@@ -192,13 +204,14 @@ def apollo_search(domain):
         return None
 
 
-def apollo_match_by_id(pid):
-    """Révèle l'email d'une personne via son id Apollo (consomme 1 crédit)."""
+def apollo_match_by_id(pid, reveal_personal=False):
+    """Révèle l'email d'une personne via son id Apollo (consomme 1 email credit).
+    reveal_personal=False obligatoire pour UK/AU (UK GDPR + APP 7)."""
     try:
         r = requests.post(
             "https://api.apollo.io/api/v1/people/match",
             headers=APOLLO_HEADERS,
-            json={"id": pid, "reveal_personal_emails": True},
+            json={"id": pid, "reveal_personal_emails": bool(reveal_personal)},
             timeout=30,
         )
         if r.status_code != 200:
@@ -208,21 +221,27 @@ def apollo_match_by_id(pid):
         return None
 
 
-def apollo_find(domain):
-    """Retourne dict {first,last,full,title,email,apollo_status} ou None."""
+def apollo_find(domain, reveal_personal=False):
+    """Retourne dict {first,last,full,title,email,apollo_status} ou None.
+    Rejette les emails freemail retournés par Apollo (compliance B2B uniquement)."""
     person = apollo_search(domain)
     if not person or not person.get("id"):
         return None
     title = person.get("title")
-    m = apollo_match_by_id(person["id"])
+    m = apollo_match_by_id(person["id"], reveal_personal=reveal_personal)
     if not m:
         return None
     email = m.get("email")
     if not email or "not_unlocked" in str(email) or "@" not in str(email):
         return None
+    email = email.lower()
+    # COMPLIANCE : Apollo peut retourner un freemail (gmail/yahoo) → on rejette.
+    edom = email.split("@", 1)[1]
+    if edom in FREE_PROVIDERS:
+        return None
     return {"first": m.get("first_name"), "last": m.get("last_name"),
             "full": f"{m.get('first_name') or ''} {m.get('last_name') or ''}".strip() or None,
-            "title": m.get("title") or title, "email": email.lower(),
+            "title": m.get("title") or title, "email": email,
             "apollo_status": m.get("email_status")}
 
 
@@ -274,7 +293,11 @@ NB_MAP = {"valid": "valid", "catchall": "catch_all", "invalid": "invalid",
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--batch", default=DEFAULT_BATCH,
+                    help=f"Batch à enrichir (défaut : {DEFAULT_BATCH})")
     ap.add_argument("--limit", type=int, default=0, help="0 = tous")
+    ap.add_argument("--pilot", action="store_true",
+                    help="Pilote 100 fiches stratifié 50US/30UK/20AU (Apollo Free tier OK)")
     ap.add_argument("--no-apollo", action="store_true")
     ap.add_argument("--no-verify", action="store_true")
     args = ap.parse_args()
@@ -292,26 +315,67 @@ def main():
                 print(f"   ⚠️ retry réseau ({k+1}/{n}) : {str(e)[:60]}", file=sys.stderr)
                 time.sleep(wait)
 
-    def fetch_rows():
+    def is_opted_out(email):
+        """COMPLIANCE : ne JAMAIS recontacter un email dans la table opt_out."""
+        try:
+            res = sb.table("opt_out").select("id").eq("email", email.lower()).limit(1).execute()
+            return bool(res.data)
+        except Exception:
+            return False  # fail-open : un opt_out indisponible ne doit pas bloquer le pipeline
+
+    def base_query():
         q = (sb.table("establishments")
-             .select("id,name,website,category,city,state")
+             .select("id,name,website,category,city,state,country")
              .eq("enrichment_status", "pending")
              .not_.is_("website", "null")
-             .order("created_at"))
-        if args.limit:
-            q = q.limit(args.limit)
-        return q.execute().data
+             .eq("batch", args.batch))
+        return q
+
+    def fetch_pilot():
+        """100 fiches : 50 US / 30 UK / 20 AU, tirage aléatoire stratifié."""
+        out = []
+        for code, n in [("US", 50), ("GB", 30), ("AU", 20)]:
+            data = base_query().eq("country", code).execute().data
+            sample = random.sample(data, min(n, len(data)))
+            print(f"  pilote {code}: {len(sample)} fiches tirées (sur {len(data)} dispo)")
+            out.extend(sample)
+        random.shuffle(out)
+        return out
+
+    def fetch_rows():
+        """Pagination Supabase : PostgREST plafonne à 1000 lignes/requête → on boucle."""
+        if args.pilot:
+            return fetch_pilot()
+        PAGE = 1000
+        out = []
+        offset = 0
+        while True:
+            page = (base_query()
+                    .order("created_at")
+                    .range(offset, offset + PAGE - 1)
+                    .execute().data)
+            out.extend(page)
+            if args.limit and len(out) >= args.limit:
+                return out[:args.limit]
+            if len(page) < PAGE:
+                return out
+            offset += PAGE
 
     rows = retry(fetch_rows)
-    print(f"{len(rows)} établissements à enrichir\n")
+    print(f"\n{len(rows)} établissements à enrichir (batch={args.batch})\n")
 
     stats = {"crawl_perso": 0, "crawl_generic": 0, "apollo": 0, "no_email": 0,
-             "valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0}
+             "valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0,
+             "opt_out_skipped": 0}
+    per_country = {}  # {country: {kept, valid, ...}}
 
     for i, est in enumerate(rows, 1):
         eid, name, site = est["id"], est["name"], est["website"]
+        country = (est.get("country") or "??").upper()[:2]
         domain = get_domain(site)
-        print(f"[{i}/{len(rows)}] {name[:40]:40} {domain or ''}", flush=True)
+        pc = per_country.setdefault(country, {"crawl": 0, "apollo": 0, "valid": 0, "catch_all": 0,
+                                              "invalid": 0, "unknown": 0, "no_email": 0})
+        print(f"[{i}/{len(rows)}] {country} | {name[:38]:38} {domain or ''}", flush=True)
 
         try:
             email = full = first = last = title = None
@@ -328,16 +392,19 @@ def main():
                 full = f"{first or ''} {last or ''}".strip() or None
                 source = "website_crawl"
                 stats["crawl_perso"] += 1
+                pc["crawl"] += 1
 
-            # 2) Apollo si pas d'email perso
+            # 2) Apollo si pas d'email perso (reveal_personal_emails uniquement US)
             if not email and not args.no_apollo and domain and APOLLO_KEY:
-                found = apollo_find(domain)
+                reveal_personal = (country == "US")  # UK + AU → False (GDPR / APP 7)
+                found = apollo_find(domain, reveal_personal=reveal_personal)
                 if found:
                     email, full, first, last, title = (found["email"], found["full"],
                                                        found["first"], found["last"], found["title"])
                     apollo_status = found.get("apollo_status")
                     source = "apollo"
                     stats["apollo"] += 1
+                    pc["apollo"] += 1
 
             # Pas d'email du tout
             if not email:
@@ -345,6 +412,14 @@ def main():
                     stats["crawl_generic"] += 1
                 else:
                     stats["no_email"] += 1
+                pc["no_email"] += 1
+                retry(lambda: sb.table("establishments").update({"enrichment_status": "no_email"}).eq("id", eid).execute())
+                continue
+
+            # COMPLIANCE : skip si l'email est déjà dans opt_out (jamais recontacter)
+            if is_opted_out(email):
+                stats["opt_out_skipped"] += 1
+                print(f"      🚫 opt-out connu, contact ignoré")
                 retry(lambda: sb.table("establishments").update({"enrichment_status": "no_email"}).eq("id", eid).execute())
                 continue
 
@@ -365,6 +440,7 @@ def main():
                 if email_status in ("valid", "catch_all"):
                     verified_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             stats[email_status] = stats.get(email_status, 0) + 1
+            pc[email_status] = pc.get(email_status, 0) + 1
 
             # 4) Insertion contact + statut
             contact = {
@@ -387,17 +463,28 @@ def main():
             print(f"      ⚠️ erreur, établissement ignoré : {str(e)[:80]}", file=sys.stderr)
             continue
 
-    # Récap
-    print("\n===== RÉCAP =====")
-    print(f"Emails perso via crawl : {stats['crawl_perso']}")
-    print(f"Emails via Apollo      : {stats['apollo']}")
-    print(f"Generic seul (info@…)  : {stats['crawl_generic']}")
-    print(f"Aucun email            : {stats['no_email']}")
+    # Récap global
+    print("\n===== RÉCAP GLOBAL =====")
+    print(f"Emails perso via crawl     : {stats['crawl_perso']}")
+    print(f"Emails via Apollo          : {stats['apollo']}")
+    print(f"Generic seul (info@…)      : {stats['crawl_generic']}")
+    print(f"Aucun email                : {stats['no_email']}")
+    print(f"Opt-out skippés (compliance): {stats['opt_out_skipped']}")
     print(f"--- Vérification ---")
-    print(f"  valid      : {stats.get('valid',0)}")
-    print(f"  catch_all  : {stats.get('catch_all',0)}")
-    print(f"  invalid    : {stats.get('invalid',0)}")
-    print(f"  unknown    : {stats.get('unknown',0)}")
+    print(f"  valid      : {stats.get('valid', 0)}")
+    print(f"  catch_all  : {stats.get('catch_all', 0)}")
+    print(f"  invalid    : {stats.get('invalid', 0)}")
+    print(f"  unknown    : {stats.get('unknown', 0)}")
+
+    # Récap par pays (critique pour le pilote stratifié)
+    if per_country:
+        print("\n===== RÉCAP PAR PAYS =====")
+        print(f"{'Pays':<6}{'Crawl':>7}{'Apollo':>8}{'Valid':>7}{'Catch':>7}{'Inval':>7}{'Unkn':>7}{'NoMail':>8}")
+        for c in sorted(per_country):
+            p = per_country[c]
+            print(f"{c:<6}{p['crawl']:>7}{p['apollo']:>8}{p.get('valid', 0):>7}"
+                  f"{p.get('catch_all', 0):>7}{p.get('invalid', 0):>7}"
+                  f"{p.get('unknown', 0):>7}{p.get('no_email', 0):>8}")
 
 
 if __name__ == "__main__":

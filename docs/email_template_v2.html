@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WWW Prospection — Email Template v2</title>
+</head>
+<body style="margin:0; padding:0; background:#f5f7fa; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color:#1a1a1a; -webkit-font-smoothing:antialiased;">
+  <!-- Wrapper -->
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f5f7fa; padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="540" style="max-width:540px; background:#ffffff; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+
+          <!-- Header : logo + tag association -->
+          <tr>
+            <td style="padding:24px 32px 8px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td style="vertical-align:middle;">
+                    <!-- Le logo WWW est servi depuis wellmap.org en prod ; ici on garde un placeholder texte -->
+                    <span style="display:inline-block; color:#5cb3c3; font-weight:700; font-size:17px; letter-spacing:-0.01em;">
+                      10<sup>th</sup> World Wellness Weekend
+                    </span>
+                  </td>
+                  <td align="right" style="vertical-align:middle; font-size:11px; color:#8a94a6; letter-spacing:0.04em; text-transform:uppercase;">
+                    Sept 18-20, 2026
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Filet de séparation -->
+          <tr>
+            <td style="padding:0 32px;">
+              <div style="border-top:1px solid #e6ebf2; height:0; line-height:0; font-size:0;">&nbsp;</div>
+            </td>
+          </tr>
+
+          <!-- Corps de l'email -->
+          <tr>
+            <td style="padding:24px 32px 8px 32px; font-size:15px; line-height:1.55; color:#1a1a1a;">
+              <p style="margin:0 0 14px 0;">Hi <strong>{{first_name}}</strong>,</p>
+
+              <p style="margin:0 0 14px 0;">
+                Saw <strong>{{establishment_name}}</strong> in {{city}} — exactly the kind of {{venue_noun}}
+                we built the 10<sup>th</sup> World Wellness Weekend (Sept 18-20, 2026) for.
+                {{peer_chain_hint}} are joining <strong>15,000 venues in 190 countries</strong>
+                — <strong>over 20 million media views in 2025</strong> — to host one free class that weekend,
+                no fee, no commission.
+              </p>
+
+              <p style="margin:0 0 20px 0;">
+                For a {{venue_noun}} like yours, {{category_format}} would slot in perfectly:
+                people who hesitate to commit get to try without pressure.
+              </p>
+            </td>
+          </tr>
+
+          <!-- CTA bouton -->
+          <tr>
+            <td align="center" style="padding:0 32px 8px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="background:#5cb3c3; border-radius:6px;">
+                    <a href="https://wellmap.org"
+                       style="display:inline-block; padding:12px 28px; font-size:15px; font-weight:600;
+                              color:#ffffff; text-decoration:none; letter-spacing:0.01em;">
+                      Claim your spot on the map
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Mini-tagline sous le bouton -->
+          <tr>
+            <td align="center" style="padding:6px 32px 22px 32px;">
+              <span style="font-size:12px; color:#8a94a6;">
+                Two minutes — free registration on wellmap.org
+              </span>
+            </td>
+          </tr>
+
+          <!-- Closer inspirationnel + signature -->
+          <tr>
+            <td style="padding:0 32px 24px 32px; font-size:14px; line-height:1.55; color:#1a1a1a;">
+              <p style="margin:0 0 16px 0; font-style:italic; color:#5a6478;">
+                More than ever, the world needs physical and mental wellness — be part of the solution.
+              </p>
+
+              <p style="margin:0; line-height:1.4;">
+                Warm regards,<br/>
+                <strong style="color:#1a1a1a;">Jean-Guy de Gabriac</strong><br/>
+                <span style="color:#5a6478; font-size:13px;">Founder — World Wellness Weekend</span><br/>
+                <span style="color:#8a94a6; font-size:12px;">International non-profit association</span>
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer compliance -->
+          <tr>
+            <td style="background:#f5f7fa; padding:18px 32px; font-size:11px; line-height:1.5; color:#8a94a6;">
+              <p style="margin:0 0 6px 0;">
+                This message was authorised by Tip Touch International SRL, Rue de la Loi 26, 1040 Brussels, Belgium
+                — company no. BE 0845.876.424 — organiser of World Wellness Weekend.
+              </p>
+              <p style="margin:0 0 6px 0;">
+                You received this email because your role at {{establishment_name}} ({{city}}) is conspicuously
+                published online and is directly relevant to a global wellness industry initiative.
+                Lawful basis: USA CAN-SPAM compliant; UK GDPR Art. 6(1)(f) legitimate interest;
+                AU Spam Act 2003 inferred consent.
+              </p>
+              <p style="margin:0;">
+                <a href="https://unsubscribe.wellmap.org/u?t={{token}}" style="color:#5cb3c3; text-decoration:underline;">
+                  One-click unsubscribe
+                </a>
+                &nbsp;·&nbsp;
+                <a href="https://wellmap.org/privacy" style="color:#5cb3c3; text-decoration:underline;">
+                  Privacy notice
+                </a>
+                &nbsp;·&nbsp;
+                <span>Reply STOP — we remove you immediately</span>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+        <p style="font-size:11px; color:#b5bdcb; margin:14px 0 0 0;">
+          You can also view this email in plain text by replying "PLAIN".
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

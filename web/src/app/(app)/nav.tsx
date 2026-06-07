@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Building2 } from "lucide-react";
+import { LayoutDashboard, Building2, Mail, BarChart3 } from "lucide-react";
 
 const LINKS = [
   { href: "/", label: "Tableau de bord", icon: LayoutDashboard, exact: true },
   { href: "/establishments", label: "Établissements", icon: Building2, exact: false },
+  { href: "/drafts", label: "Emails", icon: Mail, exact: false },
+  { href: "/stats", label: "Stats", icon: BarChart3, exact: false },
 ];
 
 export function Nav() {

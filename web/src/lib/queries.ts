@@ -1,5 +1,6 @@
 import "server-only";
 import { supabase } from "./supabase";
+import { ACTIVE_CAMPAIGN } from "./constants";
 import type {
   Contact,
   Establishment,
@@ -63,38 +64,78 @@ function ordered(
   });
 }
 
-export async function getDashboardStats(): Promise<DashboardStats> {
-  const [estabRes, contactsRes, mailableRes] = await Promise.all([
-    supabase
-      .from("establishments")
-      .select(
-        "category,enrichment_status,state,website,generic_email,generic_email_status"
-      ),
+/** Pagination Supabase : PostgREST plafonne à 1000 lignes/requête → on boucle. */
+async function fetchAllPaginated<T>(
+  build: () => ReturnType<typeof supabase.from>,
+  select: string,
+  applyFilters: (q: ReturnType<ReturnType<typeof supabase.from>["select"]>) => ReturnType<ReturnType<typeof supabase.from>["select"]>
+): Promise<T[]> {
+  const PAGE = 1000;
+  const out: T[] = [];
+  let offset = 0;
+  // We rebuild the query each iteration to ensure clean range.
+  while (true) {
+    const base = build().select(select) as unknown as ReturnType<ReturnType<typeof supabase.from>["select"]>;
+    const filtered = applyFilters(base);
+    const { data, error } = await (filtered as unknown as { range: (a: number, b: number) => unknown })
+      .range(offset, offset + PAGE - 1) as unknown as { data: T[] | null; error: unknown };
+    if (error) throw error;
+    const rows = (data ?? []) as T[];
+    out.push(...rows);
+    if (rows.length < PAGE) return out;
+    offset += PAGE;
+  }
+}
+
+export async function getDashboardStats(
+  batch: string = ACTIVE_CAMPAIGN
+): Promise<DashboardStats> {
+  const [estab, contacts, mailableA, mailableB] = await Promise.all([
+    // Tous les établissements de la campagne (paginé)
+    fetchAllPaginated<{
+      category: string;
+      enrichment_status: string;
+      state: string | null;
+      website: string | null;
+      generic_email: string | null;
+      generic_email_status: string | null;
+    }>(
+      () => supabase.from("establishments"),
+      "category,enrichment_status,state,website,generic_email,generic_email_status",
+      (q) => (q as unknown as { eq: (c: string, v: string) => typeof q }).eq("batch", batch)
+    ),
+    // Contacts filtrés via join inner sur établissements de la bonne campagne
+    fetchAllPaginated<{
+      email_status: string;
+      source_provider: string | null;
+      full_name: string | null;
+    }>(
+      () => supabase.from("contacts"),
+      "email_status,source_provider,full_name,establishments!inner(batch)",
+      (q) => (q as unknown as { eq: (c: string, v: string) => typeof q }).eq("establishments.batch", batch)
+    ),
+    // Segment A (décideurs nominatifs mailables) — équivalent au champ A de la vue
+    // contacts_mailable, mais calculé direct car PostgREST ne joint pas une vue.
     supabase
       .from("contacts")
-      .select("email_status,source_provider,full_name"),
-    // La vue contacts_mailable expose une colonne `segment`
-    // (A_decision_maker = décideurs nominatifs, B_generic_inbox = boîtes génériques de secours).
-    supabase.from("contacts_mailable").select("segment"),
+      .select("id, establishments!inner(batch)", { count: "exact", head: true })
+      .eq("establishments.batch", batch)
+      .eq("email_status", "valid")
+      .not("nominative_email", "is", null)
+      .is("opt_out_at", null),
+    // Segment B (boîtes génériques mailables)
+    supabase
+      .from("establishments")
+      .select("id", { count: "exact", head: true })
+      .eq("batch", batch)
+      .eq("enrichment_status", "no_email")
+      .not("generic_email", "is", null)
+      .eq("generic_email_status", "valid"),
   ]);
-
-  if (estabRes.error) throw estabRes.error;
-  if (contactsRes.error) throw contactsRes.error;
-  if (mailableRes.error) throw mailableRes.error;
-
-  const estab = estabRes.data as {
-    category: string;
-    enrichment_status: string;
-    state: string | null;
-    website: string | null;
-    generic_email: string | null;
-    generic_email_status: string | null;
-  }[];
-  const contacts = contactsRes.data as {
-    email_status: string;
-    source_provider: string | null;
-    full_name: string | null;
-  }[];
+  if (mailableA.error) throw mailableA.error;
+  if (mailableB.error) throw mailableB.error;
+  const segA = mailableA.count ?? 0;
+  const segB = mailableB.count ?? 0;
 
   // Matrice catégorie × statut d'enrichissement
   const matrixMap = new Map<string, Record<string, number>>();
@@ -147,10 +188,11 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       (a, b) => b.count - a.count
     ),
     contactsWithName: contacts.filter((c) => c.full_name).length,
-    mailableTotal: mailableRes.data?.length ?? 0,
-    mailableBySegment: tally(
-      (mailableRes.data ?? []).map((r) => ({ key: (r as { segment: string }).segment }))
-    ).sort((a, b) => a.key.localeCompare(b.key)),
+    mailableTotal: segA + segB,
+    mailableBySegment: [
+      { key: "A_decision_maker", count: segA },
+      { key: "B_generic_inbox", count: segB },
+    ],
   };
 }
 
@@ -173,12 +215,14 @@ const LIST_COLUMNS =
   "id,name,category,city,state,rating,review_count,website,phone,generic_email,generic_email_status,enrichment_status,contacts(email_status,nominative_email,full_name,role,source_provider)";
 
 export async function getEstablishments(
-  f: EstabFilters
+  f: EstabFilters,
+  batch: string = ACTIVE_CAMPAIGN
 ): Promise<{ rows: EstablishmentWithContacts[]; total: number; page: number }> {
   const page = Math.max(1, f.page ?? 1);
   let query = supabase
     .from("establishments")
-    .select(LIST_COLUMNS, { count: "exact" });
+    .select(LIST_COLUMNS, { count: "exact" })
+    .eq("batch", batch);
 
   if (f.q) query = query.ilike("name", `%${f.q}%`);
   if (f.category) query = query.eq("category", f.category);
@@ -216,10 +260,13 @@ export async function getEstablishments(
 }
 
 /** Liste distincte des états (pour le filtre), triée par fréquence. */
-export async function getStateFacets(): Promise<string[]> {
+export async function getStateFacets(
+  batch: string = ACTIVE_CAMPAIGN
+): Promise<string[]> {
   const { data, error } = await supabase
     .from("establishments")
-    .select("state");
+    .select("state")
+    .eq("batch", batch);
   if (error) throw error;
   const counts = new Map<string, number>();
   for (const r of data as { state: string | null }[]) {
@@ -230,16 +277,260 @@ export async function getStateFacets(): Promise<string[]> {
     .map(([s]) => s);
 }
 
-export async function getCategoryFacets(): Promise<string[]> {
+export async function getCategoryFacets(
+  batch: string = ACTIVE_CAMPAIGN
+): Promise<string[]> {
   const { data, error } = await supabase
     .from("establishments")
-    .select("category");
+    .select("category")
+    .eq("batch", batch);
   if (error) throw error;
   return [...new Set((data as { category: string }[]).map((r) => r.category))].sort();
 }
 
 // --------------------------------------------------------------------------
-// Détail établissement
+// Email drafts
+// --------------------------------------------------------------------------
+
+export type EmailDraftListRow = {
+  id: string;
+  contact_id: string | null;
+  establishment_id: string;
+  campaign: string;
+  segment: "A_decision_maker" | "B_generic_inbox";
+  recipient_email: string;
+  subject: string;
+  haiku_subject_variant: string | null;
+  status: "draft" | "approved" | "rejected" | "sent" | "bounced";
+  generated_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  notes: string | null;
+  establishments: {
+    id: string;
+    name: string;
+    city: string | null;
+    country: string;
+    category: string;
+  } | null;
+};
+
+export type EmailDraft = EmailDraftListRow & {
+  body_html: string;
+  body_plain: string;
+  haiku_model: string | null;
+  haiku_input: Record<string, unknown>;
+};
+
+export type DraftFilters = {
+  status?: string;
+  country?: string;
+  segment?: string;
+  q?: string;
+  page?: number;
+};
+
+export const DRAFTS_PAGE_SIZE = 30;
+
+export async function getDrafts(
+  f: DraftFilters,
+  batch: string = ACTIVE_CAMPAIGN
+): Promise<{ rows: EmailDraftListRow[]; total: number; page: number }> {
+  const page = Math.max(1, f.page ?? 1);
+  let query = supabase
+    .from("email_drafts")
+    .select(
+      "id,contact_id,establishment_id,campaign,segment,recipient_email,subject,haiku_subject_variant,status,generated_at,reviewed_at,reviewed_by,notes," +
+        "establishments!inner(id,name,city,country,category,batch)",
+      { count: "exact" }
+    )
+    .eq("campaign", batch)
+    .eq("establishments.batch", batch);
+
+  if (f.status) query = query.eq("status", f.status);
+  if (f.segment) query = query.eq("segment", f.segment);
+  if (f.country) query = query.eq("establishments.country", f.country);
+  if (f.q) query = query.or(
+    `subject.ilike.%${f.q}%,recipient_email.ilike.%${f.q}%`
+  );
+
+  const from = (page - 1) * DRAFTS_PAGE_SIZE;
+  query = query
+    .order("generated_at", { ascending: false })
+    .range(from, from + DRAFTS_PAGE_SIZE - 1);
+
+  const { data, error, count } = await query;
+  if (error) throw error;
+  return {
+    rows: (data ?? []) as unknown as EmailDraftListRow[],
+    total: count ?? 0,
+    page,
+  };
+}
+
+export async function getDraft(id: string): Promise<EmailDraft | null> {
+  const { data, error } = await supabase
+    .from("email_drafts")
+    .select(
+      "*,establishments(id,name,city,country,category,website,batch,rating,review_count)"
+    )
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as unknown as EmailDraft | null) ?? null;
+}
+
+export async function getDraftsCountByStatus(
+  batch: string = ACTIVE_CAMPAIGN
+): Promise<Record<string, number>> {
+  const { data, error } = await supabase
+    .from("email_drafts")
+    .select("status,establishments!inner(batch)")
+    .eq("campaign", batch)
+    .eq("establishments.batch", batch);
+  if (error) throw error;
+  const out: Record<string, number> = {};
+  for (const r of (data ?? []) as { status: string }[]) {
+    out[r.status] = (out[r.status] ?? 0) + 1;
+  }
+  return out;
+}
+
+// --------------------------------------------------------------------------
+// Email stats (envois + tracking)
+// --------------------------------------------------------------------------
+
+export type EmailStats = {
+  totals: {
+    sent: number;
+    clicked: number;
+    bounced: number;
+    complained: number;
+    unsubscribed: number;
+    replied: number;
+    registered: number;
+  };
+  rates: {
+    clickRate: number; // clicked / sent
+    bounceRate: number;
+    unsubRate: number;
+    registerRate: number; // registered / sent
+    clickToRegisterRate: number; // registered / clicked
+  };
+  byCountry: { key: string; sent: number; clicked: number; registered: number }[];
+  bySegment: { key: string; sent: number; clicked: number; registered: number }[];
+  bySubjectVariant: { key: string; sent: number; clicked: number; registered: number }[];
+  daily: { day: string; sent: number; clicked: number; registered: number }[];
+};
+
+export async function getEmailStats(
+  batch: string = ACTIVE_CAMPAIGN
+): Promise<EmailStats> {
+  const sends = await fetchAllPaginated<{
+    sent_at: string | null;
+    clicked_at: string | null;
+    replied_at: string | null;
+    bounced: boolean | null;
+    complained: boolean | null;
+    unsubscribed_at: string | null;
+    registered_at: string | null;
+    country: string | null;
+    segment: string | null;
+    subject_variant: string | null;
+  }>(
+    () => supabase.from("email_sends"),
+    "sent_at,clicked_at,replied_at,bounced,complained,unsubscribed_at,registered_at,country,segment,subject_variant",
+    (q) =>
+      (q as unknown as { eq: (c: string, v: string) => typeof q }).eq(
+        "campaign",
+        batch
+      )
+  );
+
+  const totals = {
+    sent: 0,
+    clicked: 0,
+    bounced: 0,
+    complained: 0,
+    unsubscribed: 0,
+    replied: 0,
+    registered: 0,
+  };
+  type Bucket = { sent: number; clicked: number; registered: number };
+  const newBucket = (): Bucket => ({ sent: 0, clicked: 0, registered: 0 });
+  const country = new Map<string, Bucket>();
+  const segment = new Map<string, Bucket>();
+  const variant = new Map<string, Bucket>();
+  const daily = new Map<string, Bucket>();
+
+  for (const s of sends) {
+    if (s.sent_at) totals.sent += 1;
+    if (s.clicked_at) totals.clicked += 1;
+    if (s.bounced) totals.bounced += 1;
+    if (s.complained) totals.complained += 1;
+    if (s.unsubscribed_at) totals.unsubscribed += 1;
+    if (s.replied_at) totals.replied += 1;
+    if (s.registered_at) totals.registered += 1;
+
+    const c = s.country ?? "—";
+    const cBucket = country.get(c) ?? newBucket();
+    if (s.sent_at) cBucket.sent += 1;
+    if (s.clicked_at) cBucket.clicked += 1;
+    if (s.registered_at) cBucket.registered += 1;
+    country.set(c, cBucket);
+
+    const sg = s.segment ?? "—";
+    const sBucket = segment.get(sg) ?? newBucket();
+    if (s.sent_at) sBucket.sent += 1;
+    if (s.clicked_at) sBucket.clicked += 1;
+    if (s.registered_at) sBucket.registered += 1;
+    segment.set(sg, sBucket);
+
+    const v = s.subject_variant ?? "—";
+    const vBucket = variant.get(v) ?? newBucket();
+    if (s.sent_at) vBucket.sent += 1;
+    if (s.clicked_at) vBucket.clicked += 1;
+    if (s.registered_at) vBucket.registered += 1;
+    variant.set(v, vBucket);
+
+    if (s.sent_at) {
+      const day = s.sent_at.slice(0, 10);
+      const dBucket = daily.get(day) ?? newBucket();
+      dBucket.sent += 1;
+      if (s.clicked_at) dBucket.clicked += 1;
+      if (s.registered_at) dBucket.registered += 1;
+      daily.set(day, dBucket);
+    }
+  }
+
+  const rate = (a: number, b: number) => (b === 0 ? 0 : a / b);
+
+  return {
+    totals,
+    rates: {
+      clickRate: rate(totals.clicked, totals.sent),
+      bounceRate: rate(totals.bounced, totals.sent),
+      unsubRate: rate(totals.unsubscribed, totals.sent),
+      registerRate: rate(totals.registered, totals.sent),
+      clickToRegisterRate: rate(totals.registered, totals.clicked),
+    },
+    byCountry: [...country.entries()]
+      .map(([key, v]) => ({ key, ...v }))
+      .sort((a, b) => b.sent - a.sent),
+    bySegment: [...segment.entries()]
+      .map(([key, v]) => ({ key, ...v }))
+      .sort((a, b) => b.sent - a.sent),
+    bySubjectVariant: [...variant.entries()]
+      .map(([key, v]) => ({ key, ...v }))
+      .sort((a, b) => rate(b.clicked, b.sent) - rate(a.clicked, a.sent)),
+    daily: [...daily.entries()]
+      .map(([day, v]) => ({ day, ...v }))
+      .sort((a, b) => a.day.localeCompare(b.day)),
+  };
+}
+
+// --------------------------------------------------------------------------
+// Détail établissement (pas filtré par batch : on récupère par id direct)
 // --------------------------------------------------------------------------
 
 export async function getEstablishment(

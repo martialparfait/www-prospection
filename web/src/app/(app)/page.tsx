@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { getDashboardStats } from "@/lib/queries";
+import { getActiveCampaign, campaignLabel } from "@/lib/campaign";
 import {
   categoryLabel,
   emailStatusLabel,
@@ -48,7 +49,8 @@ function Legend({
 }
 
 export default async function DashboardPage() {
-  const s = await getDashboardStats();
+  const activeCampaign = await getActiveCampaign();
+  const s = await getDashboardStats(activeCampaign);
 
   const enrichSegments = s.byEnrichment.map((e) => ({
     label: enrichmentLabel(e.key),
@@ -71,7 +73,7 @@ export default async function DashboardPage() {
     <div className="space-y-8">
       <PageHeader
         title="Tableau de bord"
-        subtitle="Vue d'ensemble des données collectées et de l'avancement de l'enrichissement."
+        subtitle={`Campagne : ${campaignLabel(activeCampaign)} — vue d'ensemble des données collectées et de l'enrichissement.`}
       />
 
       {/* KPIs */}

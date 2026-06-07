@@ -3,3 +3,5 @@ google-auth>=2.0
 python-dotenv>=1.0
 requests>=2.31
 supabase>=2.4
+anthropic>=0.40
+sendgrid>=6.11

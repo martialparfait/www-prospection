@@ -3,22 +3,34 @@ World Wellness Weekend — Pipeline de scraping (étape 2)
 =======================================================
 Collecte des établissements via Apify Google Maps Scraper
 (compass/crawler-google-places), normalisation, déduplication,
-puis insertion dans la table `establishments` de Supabase.
+filtrage qualité, puis insertion dans la table `establishments` de Supabase.
 
-Pilote : USA × {yoga, pilates, fitness} × villes cibles.
+Campagne « metro_fitness_2026 » : clubs de fitness PREMIUM et MID-RANGE
+dans les grandes métropoles, USA (50%) / UK (30%) / Australie (20%).
+Canada EXCLU (CASL — opt-in obligatoire).
+
+Deux familles de recherches par ville :
+  - termes génériques premium/mid-range (filtre ≥50 avis)
+  - requêtes par enseigne (Equinox, David Lloyd, Saint Haven…) — seuil
+    d'avis abaissé car pré-qualifiées premium (capte les boutiques récentes)
+
+Garde-fous (issus de la recherche web vérifiée) :
+  - le filtre ≥50 avis n'élimine PAS le budget (Planet Fitness, PureGym,
+    Jetts ont énormément d'avis) → filtre d'EXCLUSION PAR NOM par pays
+  - dédup intra-run (placeId + nom/ville) ET contre la base existante
+  - tag `batch` pour séparer ce jeu de l'ancien pilote
 
 Prérequis :
     pip install -r requirements.txt
 
-Variables d'environnement (.env à la racine du projet) :
-    APIFY_KEY      = token API Apify
-    SUPABASE_URL   = https://xxxx.supabase.co
-    SUPABASE_KEY   = service_role key (PAS la anon key)
+Variables d'environnement (.env à la racine) :
+    APIFY_KEY, SUPABASE_URL, SUPABASE_SECRET_KEY
 
 Usage :
-    python3 scrape_apify.py                 # run complet (pilote)
-    python3 scrape_apify.py --max 40        # limite résultats/recherche
-    python3 scrape_apify.py --dry-run       # scrape mais n'insère pas
+    python3 scrape_apify.py --dry-run            # scrape mais n'insère rien
+    python3 scrape_apify.py --test               # 1 ville + 2 termes/pays (test payant minimal)
+    python3 scrape_apify.py --country US          # un seul pays
+    python3 scrape_apify.py                       # run complet (~5000 cible)
 """
 
 import argparse
@@ -40,41 +52,137 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 APIFY_KEY = os.environ.get("APIFY_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-# Clé serveur (bypass RLS) : nouveau format sb_secret_... ou legacy service_role JWT.
-# On préfère SUPABASE_SECRET_KEY ; fallback sur SUPABASE_KEY pour compatibilité.
 SUPABASE_KEY = os.environ.get("SUPABASE_SECRET_KEY") or os.environ.get("SUPABASE_KEY")
 
-# Actor "Google Maps Scraper" (compass/crawler-google-places)
 APIFY_ACTOR = "compass~crawler-google-places"
-APIFY_ENDPOINT = (
-    f"https://api.apify.com/v2/acts/{APIFY_ACTOR}/run-sync-get-dataset-items"
-)
+APIFY_ENDPOINT = f"https://api.apify.com/v2/acts/{APIFY_ACTOR}/run-sync-get-dataset-items"
 
 SOURCE = "apify_google_maps"
+CAMPAIGN_BATCH = "metro_fitness_2026"
+CATEGORY = "fitness"
 
-# Verticaux du pilote : clé interne -> terme de recherche Google Maps
-VERTICALS = {
-    "yoga": "yoga studio",
-    "pilates": "pilates studio",
-    "fitness": "fitness club",
-}
+# Filtres qualité
+MIN_REVIEWS = 50           # termes génériques
+PREMIUM_MIN_REVIEWS = 15   # requêtes par enseigne (capte les boutiques récentes)
 
-# Villes cibles du pilote (Ville, État)
-CITIES = [
-    ("New York", "New York"),
-    ("Los Angeles", "California"),
-    ("Chicago", "Illinois"),
-    ("Houston", "Texas"),
-    ("Phoenix", "Arizona"),
-    ("San Diego", "California"),
-    ("Austin", "Texas"),
-    ("Miami", "Florida"),
-    ("Seattle", "Washington"),
-    ("Denver", "Colorado"),
-]
+# Plafonds Apify par recherche (les requêtes enseigne renvoient peu → cap bas = économie).
+# Générique à 60 : le premium/mid n'est qu'une minorité des résultats génériques,
+# inutile de payer 120 — ça ÷2 le coût des recherches génériques.
+GENERIC_MAX_PER_SEARCH = 60
+CHAIN_MAX_PER_SEARCH = 30
 
-DEFAULT_MAX_PER_SEARCH = 80
+# Filtre catégorie : on ne garde que les vrais lieux de fitness (exclut spas de
+# flottaison/récup, physio, instituts de beauté… ramassés par les termes génériques).
+FITNESS_CAT_HINTS = (
+    "gym", "fitness", "health club", "physical fitness", "personal train",
+    "pilates", "yoga", "crossfit", "boxing", "martial art", "cycling studio",
+    "spin", "athletic club", "bootcamp", "strength", "reformer", "barre",
+)
+NAME_FITNESS_HINTS = (
+    "gym", "fitness", "pilates", "crossfit", "health club", "yoga",
+    "barre", "cycle", "athletic club", "bootcamp",
+)
+
 BATCH_SIZE = 500
+THROTTLE_SECONDS = 1.5  # pause entre appels Apify (évite le rate-limiting / connection reset)
+
+# Ciblage par pays (issu de la recherche web vérifiée — workflow metro-fitness-targeting).
+COUNTRIES = {
+    "US": {
+        "name": "United States",
+        "target": 2500,
+        "cities": [
+            "New York, New York", "Los Angeles, California",
+            "San Francisco, California", "Chicago, Illinois",
+            "Washington, District of Columbia", "Arlington, Virginia",
+            "Miami, Florida", "Philadelphia, Pennsylvania",
+            "Boston, Massachusetts", "Dallas, Texas", "Fort Worth, Texas",
+            "Houston, Texas", "Atlanta, Georgia", "Seattle, Washington",
+            "Denver, Colorado", "San Diego, California",
+            "Scottsdale, Arizona", "Minneapolis, Minnesota",
+        ],
+        "generic_terms": [
+            "luxury health club", "premium fitness club", "boutique fitness studio",
+            "reformer pilates studio", "Lagree fitness studio", "athletic club and spa",
+            "private personal training studio", "racquet and fitness club",
+            "high-end wellness and fitness club", "boutique cycling studio",
+            "luxury boutique gym",
+        ],
+        "chain_queries": [
+            "Equinox", "Life Time", "Bay Club", "Chelsea Piers Fitness",
+            "VillaSport Athletic Club", "Colorado Athletic Club", "Barry's Bootcamp",
+            "SoulCycle", "Solidcore", "CorePower Yoga", "Rumble Boxing",
+            "Club Pilates", "Pure Barre", "Orangetheory Fitness", "F45 Training",
+        ],
+        "avoid": [
+            "planet fitness", "crunch", "blink fitness", "youfit", "eos fitness",
+            "puregym", "esporta", "mountainside fitness", "snap fitness",
+            "anytime fitness", "workout anytime", "fitness connection", "chuze",
+            "retro fitness", "ufc gym", "amped fitness", "vasa fitness",
+            "city sports club", "genesis health clubs",
+        ],
+    },
+    "GB": {
+        "name": "United Kingdom",
+        "target": 1500,
+        "cities": [
+            "London, England", "Manchester, England", "Birmingham, England",
+            "Leeds, England", "Glasgow, Scotland", "Edinburgh, Scotland",
+            "Bristol, England", "Liverpool, England",
+            "Newcastle upon Tyne, England", "Sheffield, England",
+            "Nottingham, England", "Cardiff, Wales",
+        ],
+        "generic_terms": [
+            "luxury health club", "premium gym", "boutique fitness studio",
+            "reformer pilates studio", "private members health club",
+            "high end gym with pool and spa", "private personal training studio",
+            "boutique cycling studio", "strength and conditioning gym",
+            "tennis and fitness club", "wellness club",
+        ],
+        "chain_queries": [
+            "Third Space", "David Lloyd Clubs", "Virgin Active",
+            "Nuffield Health Fitness and Wellbeing", "Bannatyne Health Club",
+            "Village Gym", "Barry's Bootcamp", "Gymbox", "1Rebel", "Psycle",
+            "Total Fitness", "F45 Training",
+        ],
+        "avoid": [
+            "puregym", "the gym group", "jd gyms", "xercise4less", "easygym",
+            "snap fitness", "sports direct fitness", "everlast gym", "trugym",
+            "simply gym", "gym4less", "fitspace", "bloc gym", "places gym",
+            "places leisure", "energie fitness", "better gym", "better leisure",
+            "everyone active", "leisure centre",
+        ],
+    },
+    "AU": {
+        "name": "Australia",
+        "target": 1000,
+        "cities": [
+            "Sydney, New South Wales", "Melbourne, Victoria",
+            "Brisbane, Queensland", "Perth, Western Australia",
+            "Adelaide, South Australia", "Gold Coast, Queensland",
+            "Canberra, Australian Capital Territory",
+            "Newcastle, New South Wales", "Sunshine Coast, Queensland",
+        ],
+        "generic_terms": [
+            "luxury health club", "premium health club", "private wellness club",
+            "boutique fitness studio", "reformer pilates studio",
+            "boutique HIIT studio", "HYROX training gym",
+            "functional training studio", "private personal training studio",
+            "members wellness club",
+        ],
+        "chain_queries": [
+            "Virgin Active", "Fitness First", "Goodlife Health Clubs",
+            "Saint Haven", "KX Pilates", "Barry's Bootcamp",
+            "BFT Body Fit Training", "F45 Training", "One Playground",
+            "Genesis Fitness",
+        ],
+        "avoid": [
+            "crunch fitness", "club lime", "revo fitness", "jetts", "snap fitness",
+            "zap fitness", "top gym", "world gym", "plus fitness", "envie fitness",
+            "pure health", "leisure centre", "aquatic centre",
+        ],
+    },
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -96,15 +204,20 @@ def check_config():
 
 
 def normalize_text(s):
-    """minuscule + sans accents + espaces normalisés (pour la clé de dédup)."""
+    """minuscule + sans accents + espaces normalisés."""
     if not s:
         return ""
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
     return " ".join(s.lower().split())
 
 
-def run_apify_search(search_term, location_query, max_results):
-    """Lance l'actor Apify et retourne la liste brute des lieux."""
+class ApifyQuotaError(RuntimeError):
+    """Erreur dure (crédit/quota/clé) — inutile de réessayer, on arrête."""
+
+
+def run_apify_search(search_term, location_query, max_results, retries=4):
+    """Lance l'actor Apify avec retry + backoff sur erreurs transitoires
+    (Connection reset, timeouts, 429/5xx). Lève ApifyQuotaError sur 401/402/403."""
     payload = {
         "searchStringsArray": [search_term],
         "locationQuery": location_query,
@@ -112,27 +225,58 @@ def run_apify_search(search_term, location_query, max_results):
         "language": "en",
         "skipClosedPlaces": True,
     }
-    resp = requests.post(
-        APIFY_ENDPOINT,
-        params={"token": APIFY_KEY},
-        json=payload,
-        timeout=300,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    last = None
+    for attempt in range(retries):
+        try:
+            resp = requests.post(
+                APIFY_ENDPOINT,
+                params={"token": APIFY_KEY},
+                json=payload,
+                timeout=600,
+            )
+            if resp.status_code in (401, 402, 403):
+                raise ApifyQuotaError(
+                    f"Apify {resp.status_code} (crédit/quota/clé) : {resp.text[:200]}"
+                )
+            resp.raise_for_status()
+            return resp.json()
+        except ApifyQuotaError:
+            raise
+        except Exception as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s, 4s
+    raise last
 
 
-def to_establishment(place, category):
-    """Transforme un item Apify en ligne `establishments`."""
+def is_budget(name, avoid_list):
+    """True si le nom matche une enseigne budget à exclure (substring, insensible casse)."""
+    n = normalize_text(name)
+    return any(bad in n for bad in avoid_list)
+
+
+def is_fitness_place(place):
+    """True si le lieu est bien un établissement de fitness (catégorie Google ou nom).
+    Exclut les spas/récup/physio/beauté que les termes génériques font remonter.
+    NB : un 'athletic club and spa' a une catégorie fitness → conservé."""
+    cats = place.get("categories") or []
+    cat_text = normalize_text(" | ".join(list(cats) + [place.get("categoryName") or ""]))
+    if any(h in cat_text for h in FITNESS_CAT_HINTS):
+        return True
+    name = normalize_text(place.get("title") or place.get("name") or "")
+    return any(h in name for h in NAME_FITNESS_HINTS)
+
+
+def to_establishment(place, country_code, default_region, min_reviews):
+    """Transforme un item Apify en ligne `establishments`. Porte un seuil d'avis."""
     name = place.get("title") or place.get("name")
     if not name:
         return None
 
     city = place.get("city") or ""
-    country = (place.get("countryCode") or "US").upper()[:2]
+    country = (place.get("countryCode") or country_code).upper()[:2]
     loc = place.get("location") or {}
 
-    # email générique éventuel (info@, contact@) — non personnel
     emails = place.get("emails") or []
     generic_email = emails[0] if emails else None
 
@@ -143,13 +287,13 @@ def to_establishment(place, category):
 
     return {
         "source": SOURCE,
-        "source_id": place.get("placeId") or place.get("placeId"),
+        "source_id": place.get("placeId"),
         "name": name,
-        "category": category,
+        "category": CATEGORY,
         "sub_categories": place.get("categories") or None,
         "address": place.get("address") or place.get("street"),
         "city": city,
-        "state": place.get("state"),
+        "state": place.get("state") or default_region,
         "postal_code": place.get("postalCode"),
         "country": country,
         "latitude": loc.get("lat"),
@@ -162,13 +306,16 @@ def to_establishment(place, category):
         "amenities": amenities,
         "raw_data": place,
         "dedup_key": f"{normalize_text(name)}|{normalize_text(city)}|{country}",
+        "batch": CAMPAIGN_BATCH,
         "enrichment_status": "pending",
         "scraped_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        # champs internes (retirés avant insertion)
+        "_min_reviews": min_reviews,
     }
 
 
 def dedup(rows):
-    """Déduplication en mémoire : par source_id puis par dedup_key."""
+    """Déduplication mémoire : par source_id puis par dedup_key (garde le 1er vu)."""
     seen_ids, seen_keys, out = set(), set(), []
     for r in rows:
         sid = r.get("source_id")
@@ -203,12 +350,14 @@ def filter_existing(supabase, rows):
 
 
 def insert_rows(supabase, rows):
+    # retire les champs internes
+    clean = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]
     inserted = 0
-    for i in range(0, len(rows), BATCH_SIZE):
-        batch = rows[i:i + BATCH_SIZE]
+    for i in range(0, len(clean), BATCH_SIZE):
+        batch = clean[i:i + BATCH_SIZE]
         supabase.table("establishments").insert(batch).execute()
         inserted += len(batch)
-        print(f"   → inséré {inserted}/{len(rows)}")
+        print(f"   → inséré {inserted}/{len(clean)}")
     return inserted
 
 
@@ -217,63 +366,99 @@ def insert_rows(supabase, rows):
 # --------------------------------------------------------------------------- #
 
 
+def city_search_specs(cfg, test=False):
+    """Retourne [(terme, max_results, min_reviews)] à lancer pour chaque ville."""
+    generic = cfg["generic_terms"][:2] if test else cfg["generic_terms"]
+    chains = cfg["chain_queries"][:2] if test else cfg["chain_queries"]
+    specs = [(t, GENERIC_MAX_PER_SEARCH, MIN_REVIEWS) for t in generic]
+    specs += [(q, CHAIN_MAX_PER_SEARCH, PREMIUM_MIN_REVIEWS) for q in chains]
+    return specs
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--max", type=int, default=DEFAULT_MAX_PER_SEARCH,
-                        help="Nombre max de résultats par recherche (défaut 80)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Scrape mais n'insère rien dans Supabase")
+    parser.add_argument("--country", choices=list(COUNTRIES), help="Limiter à un pays")
+    parser.add_argument("--dry-run", action="store_true", help="Scrape mais n'insère rien")
+    parser.add_argument("--test", action="store_true",
+                        help="Run minimal (1 ville + 2 termes/pays, sans enseignes)")
+    parser.add_argument("--max", type=int, default=None,
+                        help="Override du plafond résultats/recherche générique")
+    parser.add_argument("--cities-from", type=int, default=1, metavar="N",
+                        help="Reprise : commencer à la N-ième ville (1-indexed) du pays. "
+                             "Ex. --country US --cities-from 9 pour relancer à partir de Boston.")
     args = parser.parse_args()
 
     check_config()
     supabase = None if args.dry_run else create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    all_rows = []
-    total_searches = len(CITIES) * len(VERTICALS)
-    n = 0
+    codes = [args.country] if args.country else list(COUNTRIES)
+    totals = {}
 
-    for city, state in CITIES:
-        location_query = f"{city}, {state}, United States"
-        for category, term in VERTICALS.items():
-            n += 1
-            print(f"[{n}/{total_searches}] {term} @ {city}, {state} …", flush=True)
-            try:
-                places = run_apify_search(term, location_query, args.max)
-            except Exception as e:
-                print(f"   ⚠️ échec Apify : {e}", file=sys.stderr)
+    for code in codes:
+        cfg = COUNTRIES[code]
+        cities = cfg["cities"][:1] if args.test else cfg["cities"]
+        if args.cities_from > 1:
+            cities = cfg["cities"][args.cities_from - 1:]  # override --test
+        specs = city_search_specs(cfg, test=args.test)
+        c_raw = c_kept = c_inserted = 0
+        print(f"\n===== {cfg['name']} ({code}) — {len(cities)} villes × {len(specs)} recherches =====",
+              flush=True)
+
+        # Insertion INCRÉMENTALE par ville (anti-crash sur un run long).
+        for ci, city in enumerate(cities, 1):
+            location = f"{city}, {cfg['name']}"
+            region = city.split(",")[-1].strip()
+            rows = []
+            for term, mx, mr in specs:
+                time.sleep(THROTTLE_SECONDS)
+                if mx == GENERIC_MAX_PER_SEARCH and args.max:
+                    mx = args.max
+                print(f"[{code} {ci}/{len(cities)}] {term} @ {city} (max {mx}) …", flush=True)
+                try:
+                    places = run_apify_search(term, location, mx)
+                except ApifyQuotaError as e:
+                    print(f"\n🛑 ARRÊT — crédit/quota Apify : {e}", file=sys.stderr)
+                    print("   Le batch déjà inséré est conservé ; recharge Apify puis relance "
+                          f"(ex. python3 scrape_apify.py --country {code}).", file=sys.stderr)
+                    sys.exit(2)
+                except Exception as e:
+                    print(f"   ⚠️ échec (après retries) : {str(e)[:100]}", file=sys.stderr)
+                    continue
+                rows.extend(r for r in (to_establishment(p, code, region, mr) for p in places) if r)
+            c_raw += len(rows)
+
+            deduped = dedup(rows)
+            kept, d_rev, d_bud, d_cat = [], 0, 0, 0
+            for r in deduped:
+                if (r.get("review_count") or 0) < r["_min_reviews"]:
+                    d_rev += 1
+                elif is_budget(r["name"], cfg["avoid"]):
+                    d_bud += 1
+                elif not is_fitness_place(r["raw_data"]):
+                    d_cat += 1
+                else:
+                    kept.append(r)
+            c_kept += len(kept)
+            print(f"   {city}: {len(rows)} bruts → {len(kept)} gardés "
+                  f"(écartés {d_rev}<avis / {d_bud} budget / {d_cat} cat)", flush=True)
+
+            if args.dry_run:
+                for ex in kept[:3]:
+                    print(f"      • {ex['name']} | {ex['review_count']} avis | {ex.get('website')}")
                 continue
-            rows = [to_establishment(p, category) for p in places]
-            rows = [r for r in rows if r]
-            print(f"   {len(rows)} lieux récupérés")
-            all_rows.extend(rows)
 
-    print(f"\nTotal brut : {len(all_rows)} lieux")
-    deduped = dedup(all_rows)
-    print(f"Après dédup mémoire : {len(deduped)} lieux")
+            new_rows = filter_existing(supabase, kept)
+            if new_rows:
+                inserted = insert_rows(supabase, new_rows)
+                c_inserted += inserted
+                print(f"   → +{inserted} insérés (cumul {code}: {c_inserted})", flush=True)
 
-    if args.dry_run:
-        print("\n[DRY-RUN] Aucune insertion. Exemple de fiche :")
-        if deduped:
-            ex = deduped[0]
-            for k in ("name", "category", "city", "state", "website", "phone", "rating"):
-                print(f"   {k}: {ex.get(k)}")
-        return
+        totals[code] = {"raw": c_raw, "kept": c_kept, "inserted": c_inserted}
 
-    new_rows = filter_existing(supabase, deduped)
-    print(f"Après filtre doublons en base : {len(new_rows)} nouveaux lieux")
-
-    if new_rows:
-        inserted = insert_rows(supabase, new_rows)
-        print(f"\n✅ {inserted} établissements insérés dans Supabase")
-    else:
-        print("\nRien de nouveau à insérer.")
-
-    # Récap par catégorie
-    by_cat = {}
-    for r in new_rows:
-        by_cat[r["category"]] = by_cat.get(r["category"], 0) + 1
-    for c, k in by_cat.items():
-        print(f"   • {c}: {k}")
+    print("\n===== RÉCAP GLOBAL =====")
+    for code, s in totals.items():
+        print(f"  {code}: brut {s['raw']} | gardés {s['kept']} | insérés {s['inserted']} "
+              f"(cible {COUNTRIES[code]['target']})")
 
 
 if __name__ == "__main__":

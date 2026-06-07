@@ -19,7 +19,8 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // S'applique à tout sauf : assets Next, favicon, la page de login, et tout
-  // fichier statique (chemins contenant un point, ex. /brand.svg).
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|login|.*\\.).*)"],
+  // S'applique à tout sauf : assets Next, favicon, la page de login, les routes
+  // API publiques (api/sendgrid/* webhooks ESP, api/conversions appel wellmap.org),
+  // et tout fichier statique (chemins contenant un point, ex. /brand.svg).
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|login|api/sendgrid|api/conversions|.*\\.).*)"],
 };

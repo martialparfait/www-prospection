@@ -1,0 +1,55 @@
+================================================================
+WWW Prospection — Email Template v2 (plain text version)
+Enrichi avec 20M views in 2025 dans S3
+================================================================
+
+SUBJECT (A/B variants — choisis par Haiku selon le destinataire) :
+
+V1 — A free September weekend for {{establishment_name}}?
+V2 — Idea for {{establishment_name}}
+V3 — Why {{peer_name}} joined — and {{establishment_name}}?
+V4 — {{city}} fitness on the wellness world map
+V5 — A small ask for {{establishment_name}}
+V6 — 190 countries on Sept 18-20 — {{establishment_name}}?
+V7 — Open class weekend for {{city}} clubs?
+
+
+BODY (4-5 phrases, plain text strict si on garde la version plain) :
+
+Hi {{first_name}},
+
+Saw {{establishment_name}} in {{city}} — exactly the kind of {{venue_noun}}
+we built the 10th World Wellness Weekend (Sept 18-20, 2026) for.
+{{peer_chain_hint}} are joining 15,000 venues in 190 countries — over
+20 million media views in 2025 — to host one free class that weekend,
+no fee, no commission. For a {{venue_noun}} like yours, {{category_format}}
+would slot in perfectly: people who hesitate to commit get to try without
+pressure. Two minutes to claim your spot on the map: https://wellmap.org
+
+Warm regards,
+Jean-Guy de Gabriac
+Founder — World Wellness Weekend
+
+
+EXEMPLE REMPLI (US / Reform NoHo, Los Angeles, Sarah)
+
+Subject: A free September weekend for Reform NoHo?
+
+Hi Sarah,
+
+Saw Reform NoHo in Los Angeles — exactly the kind of studio we built
+the 10th World Wellness Weekend (Sept 18-20, 2026) for. Equinox-affiliated
+studios and CorePower Yoga locations are joining 15,000 venues in 190
+countries — over 20 million media views in 2025 — to host one free class
+that weekend, no fee, no commission. For a reformer studio like yours,
+a 30-minute beginner reformer demo open to the curious would slot in
+perfectly: people who hesitate to book a 10-pack get to try the springs
+without pressure. Two minutes to claim your spot on the map:
+https://wellmap.org
+
+Warm regards,
+Jean-Guy de Gabriac
+Founder — World Wellness Weekend
+
+---
+[Footer compliance ajouté automatiquement par le pipeline d'envoi]
