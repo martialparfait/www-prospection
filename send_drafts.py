@@ -52,7 +52,16 @@ SG_API_KEY = os.environ.get("SENDGRID_API_KEY")
 FROM_EMAIL = os.environ.get("SENDGRID_FROM_EMAIL")
 FROM_NAME = os.environ.get("SENDGRID_FROM_NAME", "Jean-Guy de Gabriac")
 REPLY_TO = os.environ.get("SENDGRID_REPLY_TO") or FROM_EMAIL
-UNSUB_GROUP_ID = os.environ.get("SENDGRID_UNSUB_GROUP_ID")
+_RAW_UNSUB = os.environ.get("SENDGRID_UNSUB_GROUP_ID", "").strip()
+try:
+    UNSUB_GROUP_ID = int(_RAW_UNSUB) if _RAW_UNSUB else None
+except ValueError:
+    print(
+        f"⚠️  SENDGRID_UNSUB_GROUP_ID='{_RAW_UNSUB}' n'est pas un entier — "
+        "l'ASM SendGrid sera désactivée (List-Unsubscribe sera quand même injecté via mail body).",
+        file=sys.stderr,
+    )
+    UNSUB_GROUP_ID = None
 
 DEFAULT_CAMPAIGN = "metro_fitness_2026"
 THROTTLE_SECONDS = 0.5  # ~120 emails/min, sous les limites SendGrid
@@ -116,7 +125,7 @@ def build_sendgrid_mail(draft: dict, override_to: Optional[str] = None):
     # et injecte le header List-Unsubscribe + List-Unsubscribe-Post (RFC 8058).
     if UNSUB_GROUP_ID:
         from sendgrid.helpers.mail import Asm, GroupId
-        mail.asm = Asm(group_id=GroupId(int(UNSUB_GROUP_ID)))
+        mail.asm = Asm(group_id=GroupId(UNSUB_GROUP_ID))
 
     return mail
 
